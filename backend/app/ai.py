@@ -46,11 +46,27 @@ def _closest_color(rgb: tuple[int, int, int]) -> str:
     return best
 
 
+def flatten_on_white(image_bytes: bytes) -> bytes:
+    """Compone la imagen (p.ej. PNG sin fondo) sobre blanco y devuelve PNG.
+
+    Los píxeles transparentes suelen tener RGB negro; así ni Gemini ni la detección
+    de color los confunden con una prenda negra.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+    out = Image.alpha_composite(bg, img).convert("RGB")
+    buf = io.BytesIO()
+    out.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def dominant_color(image_bytes: bytes) -> str:
+    """Color más cercano de la prenda, ignorando píxeles transparentes."""
     try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img = img.resize((50, 50))
-        pixels = list(img.getdata())
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA").resize((50, 50))
+        pixels = [p[:3] for p in img.getdata() if p[3] > 128]
+        if not pixels:
+            return "gris"
         avg = tuple(sum(c) // len(pixels) for c in zip(*pixels))
         return _closest_color(avg)  # type: ignore[arg-type]
     except Exception:
@@ -117,6 +133,12 @@ def categorize_image(image_bytes: bytes, mime_type: str) -> dict[str, Any]:
         }
 
     from google.genai import types
+
+    # Gemini recibe la prenda sobre fondo blanco (si venía recortada con alfa).
+    try:
+        image_bytes, mime_type = flatten_on_white(image_bytes), "image/png"
+    except Exception:
+        pass
 
     client = _client()
     response = client.models.generate_content(
